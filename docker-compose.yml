@@ -1,0 +1,128 @@
+version: "3.2"
+services:
+
+    pinger:
+        build: .
+        image: ${REGISTRY_SLASH}kafka-sarama-pingpong
+        networks:
+            - kafka-net
+        environment:
+            kafka_brokers: kafka1:19092,kafka2:19092
+            consumer_group: pinger
+            pub_topics: ping
+            sub_topics: pong
+        depends_on:
+            - kafka1
+            - kafka2
+        deploy:
+            restart_policy:
+                condition: on-failure
+                delay: 5s
+                max_attempts: 20
+                window: 380s
+            placement:
+                constraints:
+                    - 'node.platform.os == linux'
+
+    ponger:
+        image: ${REGISTRY_SLASH}kafka-sarama-pingpong
+        networks:
+            - kafka-net
+        environment:
+            kafka_brokers: kafka1:19092,kafka2:19092
+            consumer_group: ponger
+            pub_topics: pong
+            sub_topics: ping
+        depends_on:
+            - kafka1
+            - kafka2
+        deploy:
+            restart_policy:
+                condition: on-failure
+                delay: 5s
+                max_attempts: 20
+                window: 380s
+            placement:
+                constraints:
+                    - 'node.platform.os == linux'
+
+    # zookeeper
+    zk1:
+        image: ${REGISTRY_SLASH}confluentinc/cp-zookeeper:3.3.0
+        networks:
+            - kafka-net
+        environment:
+            ZOOKEEPER_SERVER_ID: 1
+            ZOOKEEPER_CLIENT_PORT: 22181
+        ports:
+            - "22181:22181"
+        deploy:
+            placement:
+                constraints:
+                    - 'node.platform.os == linux'
+
+    # kafka brokers
+    kafka1:
+        image: ${REGISTRY_SLASH}confluentinc/cp-kafka:3.3.0
+        networks:
+            - kafka-net
+        depends_on:
+            - zk1
+        environment:
+            KAFKA_BROKER_ID: 1
+            KAFKA_ZOOKEEPER_CONNECT: zk1:22181
+            KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka1:19092
+            # don't use auto-gen topic, create topics with desired partitions & replicas at below
+            KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+            # set replica-factor to 1 (default 3) since we have less than 3 brokers 
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+        deploy:
+            placement:
+                constraints:
+                    - 'node.platform.os == linux'
+
+    kafka2:
+        image: ${REGISTRY_SLASH}confluentinc/cp-kafka:3.3.0
+        networks:
+            - kafka-net
+        depends_on:
+            - zk1
+        environment:
+            KAFKA_BROKER_ID: 2
+            KAFKA_ZOOKEEPER_CONNECT: zk1:22181
+            KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka2:19092
+            # don't use auto-gen topic, create topics with desired partitions & replicas at below
+            KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+            # set replica-factor to 1 (default 3) since we have less than 3 brokers 
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+        deploy:
+            placement:
+                constraints:
+                    - 'node.platform.os == linux'
+
+    # add kafka topics "ping","pong" with desired partitions and replicas
+    addtopics:
+        image: ${REGISTRY_SLASH}confluentinc/cp-kafka:3.3.0
+        networks:
+            - kafka-net
+        depends_on:
+            - zk1
+        deploy:
+            restart_policy:
+                condition: none  #run just once
+            placement:
+                constraints:
+                    - 'node.platform.os == linux'
+        environment:
+            topics: ping,pong # ,other-topics
+            num_partitions: 10
+            num_replicas: 1
+            kafka_brokers: kafka1,kafka2
+            kafka_port: 19092
+            zookeeper_server: zk1:22181
+        #wait for all kafka brokers up and create topics
+        command: sh -c 'IFS=,; for brok in $$kafka_brokers;do while ! nc -z $$brok $$kafka_port;do echo "wait for kafka brokers...";sleep 2;done; done; for topic in $$topics; do while ! kafka-topics --zookeeper $$zookeeper_server --create --topic $$topic --partitions $$num_partitions --replication-factor $$num_replicas; do sleep 1; done; done'
+
+networks:
+    kafka-net:
+        external: true
